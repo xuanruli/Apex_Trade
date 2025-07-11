@@ -1,7 +1,24 @@
-# Byte-compiled / optimized / DLL files
+# Environments
+venv/
+.env
+.env.*
+frontend/.env.*
+
+# Dependencies
+frontend/node_modules/
+
+# Build artifacts
+frontend/build/
+dist/
+build/
+
+# Python
 __pycache__/
 *.py[cod]
-*.ipynb
-venv/
-*DS_Store
+
+# Logs
 *.log
+logs/
+
+# OS
+.DS_Store
