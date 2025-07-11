@@ -1,0 +1,74 @@
+stages:
+  - test
+  - sast
+  - zap
+  - deploy
+
+variables:
+  HEROKU_APP_NAME: echelon-app
+  APP_URL: "http://host.docker.internal:5000"
+  ZAP_REPORT: "zap_report.html"
+
+include:
+  - template: Security/SAST.gitlab-ci.yml
+
+test:
+  stage: test
+  image: python:3.10
+  before_script:
+    - pip install -r requirements.txt
+  script:
+    - python -m unittest discover -s tests
+
+zap_baseline:
+  stage: zap
+  image: docker:latest
+  services:
+    - docker:dind
+  variables:
+    DOCKER_HOST: tcp://docker:2375/
+  before_script:
+    - apk add --no-cache curl
+  script:
+    - docker build -t local-app .
+    - docker run -d --name local-app -p 5000:5000 local-app
+    - sleep 15
+    - |
+      docker run --network host \
+        -v "$CI_PROJECT_DIR:/zap/wrk" \
+        zaproxy/zap-stable \
+        bash -c "cd /zap/wrk && zap-baseline.py -t 'http://localhost:5000' -r zap_report.html || true"
+  allow_failure: true          
+  artifacts:
+    when: always
+    paths:
+      - "zap_report.html"
+
+deploy:
+  stage: deploy
+  image: docker:latest
+  services:
+    - docker:dind
+  only:
+    - main
+  before_script:
+    # curl + jq for the API call
+    - apk add --no-cache curl jq
+    - echo "$HEROKU_API_KEY" | docker login --username=_ --password-stdin registry.heroku.com
+  script:
+    - docker build -t registry.heroku.com/$HEROKU_APP_NAME/web .
+    - docker push registry.heroku.com/$HEROKU_APP_NAME/web
+    # release the new image
+    - |
+      curl -s -X PATCH https://api.heroku.com/apps/$HEROKU_APP_NAME/formation \
+        -H "Content-Type: application/json" \
+        -H "Accept: application/vnd.heroku+json; version=3.docker-releases" \
+        -H "Authorization: Bearer $HEROKU_API_KEY" \
+        -d "{\"updates\":[{\"type\":\"web\",\"docker_image\":\"$(docker inspect registry.heroku.com/$HEROKU_APP_NAME/web --format={{.Id}})\"}]}"
+    # fetch & print the canonical URL (never fail the job if this step errors)
+    - |
+      APP_URL=$(curl -s https://api.heroku.com/apps/$HEROKU_APP_NAME \
+                 -H "Accept: application/vnd.heroku+json; version=3" \
+                 -H "Authorization: Bearer $HEROKU_API_KEY" \
+               | jq -r '.web_url') || true
+      echo "▶︎ App is now reachable at: ${APP_URL:-<unknown>}"
